@@ -2,6 +2,7 @@ use super::*;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::collections::HashSet;
 
+/// Applies a move and checks that the expected seat was allowed to make it.
 fn act(hand: &mut Hand, seat: usize, action: Move) {
     assert_eq!(hand.actor(), Some(seat));
     assert!(hand.play(seat, action), "{action:?} was rejected");
@@ -128,6 +129,7 @@ fn short_postflop_open_does_not_reopen_a_check() {
     assert_eq!(hand.view().street, Street::Turn);
 }
 
+/// Plays a fixed all-in sequence to showdown with the supplied cards.
 fn side_pot_hand(board: [u8; 5], holes: [[u8; 2]; 6]) -> Hand {
     let mut hand = Hand::new([8; 32], 0, [10, 21, 21, 21, 21, 21]).unwrap();
     hand.hole = holes.map(|cards| cards.map(Card));

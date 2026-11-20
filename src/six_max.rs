@@ -15,6 +15,7 @@ pub enum SetupError {
 }
 
 impl std::fmt::Display for SetupError {
+    /// Describes the invalid part of the hand setup.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::InvalidButton => "button must identify an occupied seat",
@@ -72,6 +73,7 @@ pub struct Outcome {
 }
 
 impl Outcome {
+    /// Adds the recorded fees across the main and side pots.
     pub fn total_fee(&self) -> u32 {
         self.pots.iter().map(|pot| pot.fee).sum()
     }
@@ -85,6 +87,7 @@ pub enum PotPolicy {
 }
 
 impl PotPolicy {
+    /// Resolves a recorded hand's payout policy, or returns `None` for unknown rules.
     pub fn recorded(rules: i16, has_fee_field: bool) -> Option<Self> {
         match (rules, has_fee_field) {
             (1, true) => Some(Self::LegacySingleWinnerFee),
@@ -114,14 +117,22 @@ pub struct Hand {
 }
 
 impl Hand {
+    /// Deals a full six-seat hand with no rake. Setup errors match [`Self::with_stacks`].
     pub fn new(seed: [u8; 32], button: usize, stacks: [u32; SEATS]) -> Result<Self, SetupError> {
         Self::with_stacks(seed, button, &stacks)
     }
 
+    /// Deals to the supplied seats and pays pots in full. See [`Self::with_pot_policy`] for setup errors.
     pub fn with_stacks(seed: [u8; 32], button: usize, stacks: &[u32]) -> Result<Self, SetupError> {
         Self::with_pot_policy(seed, button, stacks, PotPolicy::FullPayout)
     }
 
+    /// Deals a seeded hand, posts blinds, and applies the selected payout policy at settlement.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`SetupError`] for an out-of-range seat count or button, an
+    /// empty starting stack, or a chip total above `u32::MAX`.
     pub fn with_pot_policy(
         seed: [u8; 32],
         button: usize,
@@ -183,23 +194,32 @@ impl Hand {
         Ok(hand)
     }
 
+    /// Returns the number of occupied seats.
     pub fn player_count(&self) -> usize {
         self.players
     }
 
-    /// Privileged inspection only; never include this in a player observation.
+    /// Returns an occupied seat's private cards for privileged inspection.
+    /// Use [`Self::observation`] to build a decision input for a player.
+    ///
+    /// # Panics
+    ///
+    /// Panics for a seat index of six or higher.
     pub fn hole(&self, seat: usize) -> [String; 2] {
         self.hole[seat].map(|card| card.to_string())
     }
 
+    /// Returns the seat to act, or `None` after settlement.
     pub fn actor(&self) -> Option<usize> {
         self.actor
     }
 
+    /// Returns the payouts, refunds, and revealed cards once the hand settles.
     pub fn outcome(&self) -> Option<&Outcome> {
         self.outcome.as_ref()
     }
 
+    /// Returns the public board and betting state with fixed six-seat arrays.
     pub fn view(&self) -> View {
         View {
             button: self.button,
@@ -219,8 +239,8 @@ impl Hand {
         }
     }
 
-    /// Derive a decision input for the current actor without secret state
-    /// from other seats. Callers must route it to that seat only.
+    /// Returns the public state, legal moves, and private cards for the current actor.
+    /// Send the observation only to that seat.
     pub fn observation(&self) -> Option<Observation> {
         let seat = self.actor?;
         Some(Observation {
@@ -231,12 +251,14 @@ impl Hand {
         })
     }
 
+    /// Returns the actor's legal moves, or `None` after settlement.
     pub fn legal(&self) -> Option<Legal> {
         let seat = self.actor?;
         let can_bet = self.can_bet_count();
         let price = self.price(can_bet);
         let due = price.saturating_sub(self.bets[seat]);
         let max = self.bets[seat] + self.stacks[seat];
+        // Successive short all-ins reopen betting once they add up to a full raise.
         let reopened = self.acted_at[seat]
             .is_none_or(|last| price.saturating_sub(last) >= self.last_full_raise);
         let raise = (can_bet > 1 && max > price && reopened)
@@ -249,12 +271,13 @@ impl Hand {
         })
     }
 
+    /// Returns a check when legal, a fold when facing a bet, or `None` after settlement.
     pub fn timeout(&self) -> Option<Move> {
         self.legal()
             .map(|legal| if legal.check { Move::Check } else { Move::Fold })
     }
 
-    /// Reject out-of-turn and illegal moves without changing any hand state.
+    /// Applies a legal move and advances the hand. Rejected moves leave it unchanged.
     pub fn play(&mut self, seat: usize, action: Move) -> bool {
         if self.actor != Some(seat) {
             return false;
@@ -280,20 +303,24 @@ impl Hand {
         true
     }
 
+    /// Moves chips from the seat's stack into its street bet and hand contribution.
     fn pay(&mut self, seat: usize, amount: u32) {
         self.stacks[seat] -= amount;
         self.bets[seat] += amount;
         self.contributions[seat] += amount;
     }
 
+    /// Checks whether the seat can still act in the betting round.
     fn can_bet(&self, seat: usize) -> bool {
         !self.folded[seat] && self.stacks[seat] > 0
     }
 
+    /// Counts seats that still have chips and remain in the hand.
     fn can_bet_count(&self) -> usize {
         (0..SEATS).filter(|&seat| self.can_bet(seat)).count()
     }
 
+    /// Returns the street total a player must match, including the preflop bring-in.
     fn price(&self, can_bet: usize) -> u32 {
         let posted = self.bets.into_iter().max().unwrap();
         // A short big blind does not reduce the preflop bring-in while
@@ -306,6 +333,7 @@ impl Hand {
         }
     }
 
+    /// Finds the next actor or deals remaining streets until another decision or settlement.
     fn advance(&mut self, mut after: usize) {
         loop {
             if self.folded.iter().filter(|&&folded| !folded).count() == 1 {
@@ -337,6 +365,7 @@ impl Hand {
         }
     }
 
+    /// Refunds uncalled bets, pays each pot, and records the final outcome.
     fn finish(&mut self, showdown: bool) {
         let ranks: [Option<[u8; 6]>; SEATS] = std::array::from_fn(|seat| {
             (!self.folded[seat] && showdown).then(|| best(self.hole[seat], &self.board))
@@ -360,6 +389,7 @@ impl Hand {
                 };
                 let distributable = amount - fee;
                 let mut payouts = [0; SEATS];
+                // Winners are ordered clockwise from the button for odd chips.
                 for (priority, winner) in winners.into_iter().enumerate() {
                     payouts[winner] = distributable / count
                         + u32::from((priority as u32) < distributable % count);
@@ -393,6 +423,7 @@ impl Hand {
         });
     }
 
+    /// Groups matched chips by pot eligibility and returns unmatched chips separately.
     fn pot_layers(&self) -> (Vec<(u32, [bool; SEATS])>, [u32; SEATS]) {
         let mut thresholds = self.contributions;
         thresholds.sort_unstable();
@@ -425,6 +456,7 @@ impl Hand {
     }
 }
 
+/// Visits each occupied seat once, starting after the given seat.
 fn clockwise(after: usize, players: usize) -> impl Iterator<Item = usize> {
     (1..=players).map(move |offset| (after + offset) % players)
 }

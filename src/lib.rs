@@ -1,3 +1,5 @@
+//! Shared poker types, deterministic shuffling, hand ranking, and heads-up play.
+
 use rand::{SeedableRng, seq::SliceRandom};
 use rand_chacha::ChaCha20Rng;
 use serde::{Deserialize, Serialize};
@@ -16,6 +18,7 @@ pub const HANDS: u32 = 12;
 pub struct Card(u8);
 
 impl std::fmt::Display for Card {
+    /// Writes the rank and suit as a two-character code such as `As`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let rank = b"23456789TJQKA"[usize::from(self.0 % 13)] as char;
         let suit = b"cdhs"[usize::from(self.0 / 13)] as char;
@@ -42,6 +45,7 @@ pub struct Legal {
 }
 
 impl Legal {
+    /// Checks whether the move is offered, including both endpoints of a raise range.
     pub fn allows(&self, action: Move) -> bool {
         match action {
             Move::Check => self.check,
@@ -71,6 +75,7 @@ pub enum Street {
 }
 
 impl std::fmt::Display for Street {
+    /// Writes the lowercase street name used in hand records.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Preflop => "preflop",
@@ -110,14 +115,30 @@ pub struct Hand {
 }
 
 impl Hand {
+    /// Deals a heads-up hand with 1,000 chips per seat and 5/10 blinds.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless the button is seat 0 or 1.
     pub fn new(seed: [u8; 32], button: usize) -> Self {
         Self::with_stacks(seed, button, [STACK; 2])
     }
 
+    /// Deals a heads-up hand with the given stacks and 5/10 blinds.
+    ///
+    /// # Panics
+    ///
+    /// Panics for an invalid button or a stack outside `1..=MAX_HEADS_UP_STACK`.
     pub fn with_stacks(seed: [u8; 32], button: usize, starting_stacks: [u32; 2]) -> Self {
         Self::with_blinds(seed, button, starting_stacks, SMALL, BIG)
     }
 
+    /// Deals a heads-up hand with custom stacks and blinds.
+    ///
+    /// # Panics
+    ///
+    /// Panics for an invalid button, a stack outside `1..=MAX_HEADS_UP_STACK`,
+    /// or blinds that violate `1 <= small_blind <= big_blind <= MAX_HEADS_UP_STACK`.
     pub fn with_blinds(
         seed: [u8; 32],
         button: usize,
@@ -135,7 +156,11 @@ impl Hand {
         )
     }
 
-    /// Replay recordings written by the original button-first heads-up dealer.
+    /// Deals the first card to the button to reproduce legacy recordings.
+    ///
+    /// # Panics
+    ///
+    /// Panics on the same invalid inputs as [`Self::with_blinds`].
     pub fn replay_button_first(
         seed: [u8; 32],
         button: usize,
@@ -146,6 +171,7 @@ impl Hand {
         Self::deal(seed, button, stacks, small_blind, big_blind, button)
     }
 
+    /// Deals hole cards from the selected first seat, posts blinds, and resolves forced all-ins.
     fn deal(
         seed: [u8; 32],
         button: usize,
@@ -195,25 +221,33 @@ impl Hand {
         hand
     }
 
+    /// Returns the seat to act, or `None` after settlement.
     pub fn actor(&self) -> Option<usize> {
         self.result.is_none().then_some(self.actor)
     }
 
+    /// Returns the selected seat's private cards. Share them only with that seat or an authorized reviewer.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless the seat is 0 or 1.
     pub fn hole(&self, seat: usize) -> [String; 2] {
         self.hole[seat].map(|card| card.to_string())
     }
 
+    /// Returns the final chip changes and showdown status once the hand settles.
     pub fn result(&self) -> Option<&Result> {
         self.result.as_ref()
     }
 
-    /// Completed contested pot; unmatched contributions have been returned.
+    /// Returns the contested pot after settlement, excluding refunded chips.
     pub fn settled_pot(&self) -> Option<u32> {
         self.result
             .as_ref()
             .map(|_| self.committed[0].min(self.committed[1]) * 2)
     }
 
+    /// Returns the public board, betting state, and stacks.
     pub fn view(&self) -> View {
         View {
             button: self.button,
@@ -235,6 +269,7 @@ impl Hand {
         }
     }
 
+    /// Returns the current actor's legal moves, or `None` after settlement.
     pub fn legal(&self) -> Option<Legal> {
         let seat = self.actor()?;
         let other = seat ^ 1;
@@ -251,15 +286,18 @@ impl Hand {
         })
     }
 
+    /// Checks whether the current actor can make the move.
     pub fn allows(&self, action: Move) -> bool {
         self.legal().is_some_and(|legal| legal.allows(action))
     }
 
+    /// Returns a check when legal, a fold when facing a bet, or `None` after settlement.
     pub fn timeout(&self) -> Option<Move> {
         self.legal()
             .map(|legal| if legal.check { Move::Check } else { Move::Fold })
     }
 
+    /// Applies the current actor's move and advances the hand. Rejected moves leave it unchanged.
     pub fn play(&mut self, action: Move) -> bool {
         if !self.allows(action) {
             return false;
@@ -275,6 +313,7 @@ impl Hand {
             Move::Call => self.pay(seat, self.legal().unwrap().call.unwrap()),
             Move::Raise { to } => {
                 let increment = to - self.street_bets[other];
+                // Only a full raise reopens betting for an opponent who already acted.
                 if increment >= self.last_raise {
                     self.last_raise = increment;
                     self.acted[other] = false;
@@ -303,19 +342,22 @@ impl Hand {
         true
     }
 
+    /// Moves chips from the seat's stack into its street bet and hand contribution.
     fn pay(&mut self, seat: usize, amount: u32) {
         self.stacks[seat] -= amount;
         self.street_bets[seat] += amount;
         self.committed[seat] += amount;
     }
 
+    /// Burns one card and deals the next street's community cards.
     fn deal_street(&mut self) {
-        self.deck.pop(); // burn
+        self.deck.pop();
         let count = if self.board.is_empty() { 3 } else { 1 };
         self.board
             .extend((0..count).map(|_| self.deck.pop().unwrap()));
     }
 
+    /// Completes the board and settles the hand by comparing ranks.
     fn showdown(&mut self) {
         while self.board.len() < 5 {
             self.deal_street();
@@ -323,6 +365,7 @@ impl Hand {
         self.finish(None);
     }
 
+    /// Refunds unmatched chips and awards the pot by fold, showdown rank, or tie.
     fn finish(&mut self, folded_winner: Option<usize>) {
         let matched = self.committed[0].min(self.committed[1]);
         for seat in 0..2 {
@@ -353,7 +396,7 @@ impl Hand {
     }
 }
 
-/// Cards in the order the dealer would draw them, including burn positions.
+/// Returns card codes in draw order, including burn positions.
 pub fn deal_order(seed: [u8; 32]) -> Vec<String> {
     shuffled_deck(seed)
         .iter()
@@ -362,14 +405,15 @@ pub fn deal_order(seed: [u8; 32]) -> Vec<String> {
         .collect()
 }
 
+/// Shuffles a standard deck with ChaCha20. The dealer draws from the end.
 fn shuffled_deck(seed: [u8; 32]) -> Vec<Card> {
     let mut deck: Vec<_> = (0..52).map(Card).collect();
     deck.shuffle(&mut ChaCha20Rng::from_seed(seed));
     deck
 }
 
-/// Rank a revealed Hold'em hand. Larger ranks win. Invalid or duplicate cards
-/// within the seven-card hand return `None`.
+/// Ranks the best five cards of a revealed Hold'em hand. Larger ranks win.
+/// Returns `None` for invalid codes or duplicate cards.
 pub fn showdown_rank(hole: [&str; 2], board: [&str; 5]) -> Option<[u8; 6]> {
     let mut cards = [Card(0); 7];
     let mut seen = 0u64;
@@ -389,6 +433,7 @@ pub fn showdown_rank(hole: [&str; 2], board: [&str; 5]) -> Option<[u8; 6]> {
     Some(best([cards[0], cards[1]], &cards[2..]))
 }
 
+/// Finds the strongest five-card combination among two hole cards and five board cards.
 fn best(hole: [Card; 2], board: &[Card]) -> [u8; 6] {
     let cards = [hole.as_slice(), board].concat();
     let mut rank = [0; 6];
@@ -404,6 +449,7 @@ fn best(hole: [Card; 2], board: &[Card]) -> [u8; 6] {
     rank
 }
 
+/// Encodes a five-card hand as an ordered category and tie-break ranks.
 fn rank_five(cards: [Card; 5]) -> [u8; 6] {
     let flush = cards.iter().all(|card| card.0 / 13 == cards[0].0 / 13);
     let mut counts = [0; 15];
@@ -422,6 +468,7 @@ fn rank_five(cards: [Card; 5]) -> [u8; 6] {
         if high - groups[4].1 == 4 {
             high
         } else if high == 14 && groups[1].1 == 5 {
+            // A-2-3-4-5 ranks as a five-high straight.
             5
         } else {
             0

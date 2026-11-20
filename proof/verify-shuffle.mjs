@@ -3,10 +3,12 @@ const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const hashPattern = /^[0-9a-f]{64}$/i;
 const encoder = new TextEncoder();
 
+/** Decodes a validated hexadecimal string into bytes. */
 function bytes(hex) {
   return Uint8Array.from(hex.match(/../g), pair => parseInt(pair, 16));
 }
 
+/** Hashes the byte arrays in order as one SHA-256 message. */
 async function sha256(...parts) {
   const data = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
   let offset = 0;
@@ -17,10 +19,12 @@ async function sha256(...parts) {
   return new Uint8Array(await crypto.subtle.digest('SHA-256', data));
 }
 
+/** Encodes bytes as lowercase hexadecimal with two digits per byte. */
 function hex(data) {
   return Array.from(data, byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
+/** Checks a completed hand's revealed cards and draw positions against a supplied deck root. */
 export async function verifyShuffle(payload, expectedRoot) {
   const {proof} = payload;
   if (payload.version !== version || !uuid.test(proof.hand_id) ||
@@ -29,6 +33,7 @@ export async function verifyShuffle(payload, expectedRoot) {
       !hashPattern.test(proof.root) || proof.root !== expectedRoot.toLowerCase()) return false;
   if (proof.state !== 'complete' || !Array.isArray(proof.board) ||
       ![0, 3, 4, 5].includes(proof.board.length) || !Array.isArray(proof.showdown)) return false;
+  // The board follows two rounds of hole cards, with a burn before each street.
   const positions = [1, 2, 3, 5, 7].map(offset => 2 * proof.seats + offset);
   const checks = proof.board.map((card, index) => [card, positions[index]]);
   const shown = new Set();
@@ -52,6 +57,7 @@ export async function verifyShuffle(payload, expectedRoot) {
     let index = position;
     for (const sibling of opening.siblings) {
       const other = bytes(sibling);
+      // A right child hashes after its sibling, preserving the committed order.
       node = await (index % 2 ? sha256(Uint8Array.of(1), other, node) : sha256(Uint8Array.of(1), node, other));
       index >>= 1;
     }

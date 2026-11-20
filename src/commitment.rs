@@ -8,6 +8,7 @@ type Hash = [u8; 32];
 pub const VERSION: &str = "ms-poker-deck-v1";
 const WIDTH: usize = 64;
 
+/// Hashes the byte slices in order as one SHA-256 message.
 fn digest(parts: &[&[u8]]) -> Hash {
     let mut hash = Sha256::new();
     for part in parts {
@@ -16,6 +17,7 @@ fn digest(parts: &[&[u8]]) -> Hash {
     hash.finalize().into()
 }
 
+/// Formats a SHA-256 digest as 64 lowercase hexadecimal characters.
 pub fn hex(bytes: &Hash) -> String {
     use std::fmt::Write;
     let mut value = String::with_capacity(64);
@@ -40,13 +42,15 @@ pub struct Opening {
 }
 
 impl DeckCommitment {
-    /// Commits to a seeded deck in draw order. Keep the seed private.
+    /// Commits to the shuffled deck, hand ID, button, and seat count.
+    /// Keep the seed private so observers can only verify opened cards.
     pub fn new(id: Uuid, seed: Hash, button: u8, seats: u8) -> Self {
         let cards = crate::deal_order(seed);
         let salts = std::array::from_fn(|i| {
             digest(&[b"ms-poker-salt-v1", &seed, id.as_bytes(), &[i as u8]])
         });
         let mut nodes = [[0; 32]; WIDTH * 2];
+        // Prefix leaves and branches differently so their inputs cannot be confused.
         for i in 0..WIDTH {
             let card = cards.get(i).map_or("--", String::as_str);
             nodes[WIDTH + i] = digest(&[
@@ -68,15 +72,21 @@ impl DeckCommitment {
         }
     }
 
+    /// Returns the Merkle root to publish before play.
     pub fn root(&self) -> String {
         hex(&self.nodes[1])
     }
 
-    /// Opens a zero-based draw position. Panics for positions outside the 52 cards.
+    /// Reveals a card, its salt, and sibling hashes from leaf to root.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the zero-based draw position is outside `0..52`.
     pub fn open(&self, position: usize) -> Opening {
         let mut node = WIDTH + position;
         let mut siblings = Vec::with_capacity(6);
         while node > 1 {
+            // Sibling indices differ only in their lowest bit.
             siblings.push(hex(&self.nodes[node ^ 1]));
             node /= 2;
         }

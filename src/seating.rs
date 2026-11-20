@@ -6,12 +6,18 @@ use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 pub trait Candidate {
+    /// Identifies the owner for matching against recent hand history.
     fn owner_id(&self) -> Uuid;
+    /// Returns the known ownership group, or `None` to use the owner ID for grouping.
     fn known_group(&self) -> Option<Uuid>;
 }
 
-/// Selects a table from a nonempty, oldest-first shortlist of eligible owners.
-/// Each history row holds up to six distinct owners in order from the button.
+/// Selects a table from an oldest-first shortlist and returns the seats and button index.
+/// Each history row holds up to six distinct owners, starting with the button.
+///
+/// # Panics
+///
+/// Panics if the shortlist is empty.
 pub fn choose<C: Candidate + Clone>(
     mut entries: Vec<C>,
     history: &[Vec<Uuid>],
@@ -69,8 +75,7 @@ pub fn choose<C: Candidate + Clone>(
     }
     group.shuffle(rng);
     let button = rng.random_range(0..count);
-    // Enumerate all 720 positional assignments of six owners. Minimize the
-    // increase in squared exposure imbalance, keeping randomly ordered ties.
+    /// Finds the lowest-cost seat assignment, retaining the first of any tied solutions.
     fn best_assignment(
         costs: &[[i32; SEATS]; SEATS],
         count: usize,
@@ -102,6 +107,7 @@ pub fn choose<C: Candidate + Clone>(
             }
         }
     }
+    // Favor positions each owner has played less often than their own average.
     let costs = std::array::from_fn(|candidate| {
         let Some(entry) = group.get(candidate) else {
             return [0; SEATS];
@@ -123,6 +129,7 @@ pub fn choose<C: Candidate + Clone>(
     )
 }
 
+/// Separates ownership-group IDs from individual owner IDs, even when their UUIDs match.
 fn group_key(entry: &impl Candidate) -> (bool, Uuid) {
     (
         entry.known_group().is_some(),
@@ -151,6 +158,7 @@ mod tests {
         }
     }
 
+    /// Creates distinct synthetic owners in queue order.
     fn entries(count: u128) -> Vec<Entry> {
         (1..=count)
             .map(|id| Entry {
@@ -160,6 +168,7 @@ mod tests {
             .collect()
     }
 
+    /// Projects a selected table into the button-first order used by hand history.
     fn normalize(seats: &[Entry], button: usize) -> Vec<Uuid> {
         (0..seats.len())
             .map(|position| seats[(position + button) % seats.len()].owner)
