@@ -1,0 +1,15 @@
+[package]
+name = "poker"
+version = "0.1.0"
+edition = "2024"
+authors = ["Elvir Leonard"]
+description = "Deterministic poker dealing, seating and public deck commitments"
+repository = "https://github.com/ele0nard/millisecond-poker-dealer"
+license-file = "LICENSE"
+
+[dependencies]
+rand = "0.9"
+rand_chacha = "0.9"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+uuid = "1"
